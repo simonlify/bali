@@ -1,9 +1,13 @@
+import asyncio
+from enum import Enum
 from datetime import datetime, date
+from decimal import Decimal
 
+import pytz
 from google.protobuf import json_format
 
 from .dateparse import *
-from .timezone import StrTzInfoType, make_aware
+from .timezone import StrTzInfoType, make_aware, is_aware
 
 
 class ProtobufParser(json_format._Parser):  # noqa
@@ -13,8 +17,6 @@ class ProtobufParser(json_format._Parser):  # noqa
             self._ConvertStructMessage(value, message.struct_value)
         elif isinstance(value, list):
             self._ConvertListValueMessage(value, message.list_value)
-        elif isinstance(value, (datetime, date)):
-            message.string_value = value.isoformat()
         elif value is None:
             message.null_value = 0
         elif isinstance(value, bool):
@@ -23,6 +25,16 @@ class ProtobufParser(json_format._Parser):  # noqa
             message.string_value = value
         elif isinstance(value, json_format._INT_OR_FLOAT):  # noqa
             message.number_value = value
+        elif isinstance(value, date):
+            message.string_value = value.isoformat()
+        elif isinstance(value, datetime):
+            if is_aware(value):
+                value = value.astimezone(pytz.utc)
+            message.string_value = value.isoformat()
+        elif isinstance(value, Enum):
+            message.string_value = value.name
+        elif isinstance(value, Decimal):
+            message.string_value = str(value)
         else:
             raise json_format.ParseError(
                 'Value {0} has unexpected type {1}.'.format(value, type(value))
@@ -54,7 +66,10 @@ class ProtobufPrinter(json_format._Printer):  # noqa
                 # Use base64 Data encoding for bytes
                 return json_format.base64.b64encode(value).decode('utf-8')
             else:
-                return value
+                try:
+                    return datetime.fromisoformat(value)
+                except ValueError:
+                    return value
         elif field.cpp_type == json_format.descriptor.FieldDescriptor.CPPTYPE_BOOL:
             return bool(value)
         elif field.cpp_type in json_format._INT64_TYPES:  # noqa
@@ -116,3 +131,8 @@ def get_beginning_datetime(
 ) -> datetime:
     _datetime = datetime(year, month, day)
     return make_aware(_datetime, timezone=timezone, is_dst=is_dst)
+
+
+def sync_exec(coro):
+    loop = asyncio.get_event_loop()
+    return loop.run_until_complete(coro)

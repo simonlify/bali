@@ -1,8 +1,13 @@
 import functools
+import inspect
 
 from fastapi.dependencies.utils import get_typed_signature
+from fastapi_pagination import LimitOffsetParams, set_page
+from fastapi_pagination.limit_offset import Page
 from pydantic import BaseModel
 
+from .exceptions import ReturnTypeError
+from .paginate import paginate
 from .utils import MessageToDict, ParseDict
 
 
@@ -12,45 +17,118 @@ def compatible_method(func):
 
         # Put args to inner function from request object
         if self._is_rpc:
+            request_data = MessageToDict(
+                self._request,
+                including_default_value_fields=True,
+                preserving_proto_field_name=True,
+            )
+
             if func.__name__ == 'get':
                 pk = self._request.id
                 result = func(self, pk)
-                if isinstance(result, BaseModel):
+                if not isinstance(result, dict):
                     result = result.dict()
-                return ParseDict({'data': result}, self._response_message())
+                response_data = {'data': result}
 
             elif func.__name__ == 'list':
-                result = func(self, MessageToDict(self._request))
+                schema_in = get_schema_in(func)
+                result = func(self, schema_in(**request_data))
                 # Paginated the result queryset or iterable object
-                return result
-
-            elif func.__name__ == 'create':
-                result = func(self, MessageToDict(self._request))
                 if isinstance(result, BaseModel):
-                    result = result.dict()
-                return ParseDict({'data': result}, self._response_message())
+                    raise ReturnTypeError('Generic actions `list` should return a sequence')
+                else:
+                    set_page(Page)
+                    params = LimitOffsetParams(
+                        limit=request_data.get('limit') or 10,
+                        offset=request_data.get('offset'),
+                    )
+                    response_data = paginate(result, params=params, is_rpc=True)
 
-            elif func.__name__ == 'update':
-                result = func(self, MessageToDict(self._request))
-                if isinstance(result, BaseModel):
+            elif func.__name__ in ['create', 'update']:
+                schema_in = get_schema_in(func)
+                data = request_data.get('data')
+                result = func(self, schema_in(**data))
+                if not isinstance(result, dict):
                     result = result.dict()
-                return ParseDict({'data': result}, self._response_message())
+                response_data = {'data': result}
 
             elif func.__name__ == 'delete':
                 pk = self._request.id
                 result = func(self, pk)
-                return ParseDict({'result': bool(result)}, self._response_message())
+                response_data = {'result': bool(result)}
 
-            # custom action
-            schema_in = get_schema_in(func)
-            result = func(self, schema_in(**MessageToDict(self._request)))
-            if isinstance(result, BaseModel):
-                result = result.dict()
-            return ParseDict(result, self._response_message())
+            else:
+                # custom action
+                schema_in = get_schema_in(func)
+                result = func(self, schema_in(**request_data))
+                if not isinstance(result, dict):
+                    result = result.dict()
+                response_data = result
+
+            # Convert response data to gRPC response
+            return ParseDict(response_data, self._response_message(), ignore_unknown_fields=True)
 
         return func(self, *args, **kwargs)
 
-    return wrapper
+    @functools.wraps(func)
+    async def wrapper_async(self, *args, **kwargs):
+
+        # Put args to inner function from request object
+        if self._is_rpc:
+            request_data = MessageToDict(
+                self._request,
+                including_default_value_fields=True,
+                preserving_proto_field_name=True,
+            )
+
+            if func.__name__ == 'get':
+                pk = self._request.id
+                result = await func(self, pk)
+                if not isinstance(result, dict):
+                    result = result.dict()
+                response_data = {'data': result}
+
+            elif func.__name__ == 'list':
+                schema_in = get_schema_in(func)
+                result = await func(self, schema_in(**request_data))
+                # Paginated the result queryset or iterable object
+                if isinstance(result, BaseModel):
+                    raise ReturnTypeError('Generic actions `list` should return a sequence')
+                else:
+                    set_page(Page)
+                    params = LimitOffsetParams(
+                        limit=request_data.get('limit') or 10,
+                        offset=request_data.get('offset'),
+                    )
+                    response_data = paginate(result, params=params, is_rpc=True)
+
+            elif func.__name__ in ['create', 'update']:
+                schema_in = get_schema_in(func)
+                data = request_data.get('data')
+                result = await func(self, schema_in(**data))
+                if not isinstance(result, dict):
+                    result = result.dict()
+                response_data = {'data': result}
+
+            elif func.__name__ == 'delete':
+                pk = self._request.id
+                result = await func(self, pk)
+                response_data = {'result': bool(result)}
+
+            else:
+                # custom action
+                schema_in = get_schema_in(func)
+                result = await func(self, schema_in(**request_data))
+                if not isinstance(result, dict):
+                    result = result.dict()
+                response_data = result
+
+            # Convert response data to gRPC response
+            return ParseDict(response_data, self._response_message(), ignore_unknown_fields=True)
+
+        return func(self, *args, **kwargs)
+
+    return wrapper_async if inspect.iscoroutinefunction(func) else wrapper
 
 
 def action(methods=None, detail=None, **kwargs):
@@ -85,10 +163,16 @@ def action(methods=None, detail=None, **kwargs):
             if rpc_only:
                 return
 
+            try:
+                schema_in_annotation = get_schema_in(self.func)
+            except ValueError:
+                schema_in_annotation = None
+
             _actions = getattr(owner, '_actions')
             _actions[self.func.__name__] = {
                 'detail': detail,
                 'methods': methods,
+                'schema_in_annotation': schema_in_annotation,
             }
             setattr(owner, '_actions', _actions)
 

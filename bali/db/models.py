@@ -1,10 +1,11 @@
 from contextvars import ContextVar
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 
 import pytz
 from sqlalchemy import Column, DateTime, Boolean
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.sql.functions import func
 from sqlalchemy.types import TypeDecorator
 
@@ -18,17 +19,17 @@ class AwareDateTime(TypeDecorator):
     def python_type(self):
         return datetime
 
-    def process_result_value(self, value: datetime, dialect):
-        return timezone.make_aware(value, timezone=pytz.UTC)
+    def process_result_value(self, value, _):
+        if value is not None:
+            value = timezone.make_aware(value, timezone=pytz.utc)
 
-    def process_bind_param(self, value: datetime, dialect):
-        if timezone.is_naive(value):
-            return value
+        return value
 
-        return timezone.make_naive(value, timezone=pytz.UTC)
+    def process_bind_param(self, value, _):
+        if value is not None and timezone.is_aware(value):
+            value = timezone.make_naive(value, timezone=pytz.utc)
 
-    def process_literal_param(self, value: datetime, dialect):
-        return value.isoformat()
+        return value
 
 
 context_auto_commit = ContextVar('context_auto_commit', default=True)
@@ -45,8 +46,8 @@ def get_base_model(db):
         @classmethod
         def exists(cls, **attrs):
             """Returns whether an object with these attributes exists."""
-            equery = cls.query().filter_by(**attrs).exists()
-            return bool(db.session.query(equery).scalar())
+            query = cls.query().filter_by(**attrs).exists()
+            return bool(db.s.query(query).scalar())
 
         @classmethod
         def create(cls, **attrs):
@@ -60,7 +61,7 @@ def get_base_model(db):
             try:
                 return cls.create(**attrs)
             except IntegrityError:
-                db.session.rollback()
+                db.s.rollback()
                 return cls.first(**attrs)
 
         @classmethod
@@ -79,31 +80,87 @@ def get_base_model(db):
 
         @classmethod
         def query(cls):
-            return db.session.query(cls)
+            return db.s.query(cls)
 
         def save(self):
             """Override default model's save"""
             global context_auto_commit
-            db.session.add(self)
-            db.session.commit() if context_auto_commit.get() else db.session.flush()
+            db.s.add(self)
+            db.s.commit() if context_auto_commit.get() else db.s.flush()
             return self
 
         def delete(self):
             """Override default model's delete"""
             global context_auto_commit
-            db.session.delete(self)
-            db.session.commit() if context_auto_commit.get() else db.session.flush()
+            db.s.delete(self)
+            db.s.commit() if context_auto_commit.get() else db.s.flush()
 
         def to_dict(self):
             return {c.name: getattr(self, c.name, None) for c in self.__table__.columns}
 
+        def dict(self):
+            return self.to_dict()
+
         @classmethod
         def count(cls, **attrs) -> int:
-            return db.session.query(func.count(cls.id)).filter_by(**attrs).scalar()
+            return db.s.query(func.count(cls.id)).filter_by(**attrs).scalar()
 
         @classmethod
         def get_fields(cls) -> List[str]:
             return [c.name for c in cls.__table__.columns]
 
-    return BaseModel
+        @classmethod
+        def get_or_create(cls, defaults: Dict = None, **kwargs):
+            instance = db.s.query(cls).filter_by(**kwargs).one_or_none()
+            if instance:
+                return instance, False
 
+            instance = cls(**{**kwargs, **(defaults or {})})  # noqa
+            try:
+                db.s.add(instance)
+                db.s.commit()
+                return instance, True
+            except SQLAlchemyError:
+                db.s.rollback()
+                instance = db.s.query(cls).filter_by(**kwargs).one()
+                return instance, False
+
+        @classmethod
+        def update_or_create(cls, defaults: Dict = None, **kwargs):
+            try:
+                try:
+                    instance = (
+                        db.s.query(cls)
+                        .filter_by(**kwargs)
+                        .populate_existing()
+                        .with_for_update()
+                        .one()
+                    )
+                except NoResultFound:
+                    instance = cls(**{**kwargs, **(defaults or {})})  # noqa
+                    try:
+                        db.s.add(instance)
+                        db.s.commit()
+                    except SQLAlchemyError:
+                        db.s.rollback()
+                        instance = (
+                            db.s.query(cls)
+                            .filter_by(**kwargs)
+                            .populate_existing()
+                            .with_for_update()
+                            .one()
+                        )
+                    else:
+                        return instance, True
+            except SQLAlchemyError:
+                db.s.rollback()
+                raise
+            else:
+                for k, v in defaults.items():
+                    setattr(instance, k, v)
+                db.s.add(instance)
+                db.s.commit()
+                db.s.refresh(instance)
+                return instance, False
+
+    return BaseModel

@@ -3,10 +3,19 @@
 # This project adheres to [Semantic Versioning](http://semver.org/).
 # includes Added / Changed / Fixed
 
-## [2.1.0] UNRELEASED
+## [3.0.0] UNRELEASED
 ### Added
+- Upgraded to sql-wrapper v5.0.0dev
+- Supported uvicorn 0.15
+- Model support asynchronous
+- Resource support asynchronous
+### Changed
+- Removed main.py default launch behavior
 
-## [2.0.0] UNRELEASED
+### Changed
+- Adjusted version range dependency packages
+
+## [2.0.0] 2021-05-26
 ### Added
 - Resource layer base class, support elegant RESTful CRUD
 - Refactor core layer, support multi dotenv variables

@@ -1,12 +1,16 @@
 # bali
 
-Simplify gRPC services & FastAPI
+Simplify FastAPI integrate gRPC services development
 
 ## Install
 
 ```
 pip install bali-core
 ```
+
+## Project structure layout
+
+
 
 ## Application 
 
@@ -24,9 +28,6 @@ app.settings(base_settings={'title': 'Bali App'})
 Launch 
 
 ```bash
-# lauch RPC and HTTP service 
-python main.py
-
 # lauch RPC 
 python main.py --rpc
 
@@ -39,6 +40,8 @@ More usage of `Application`: [example](examples/main.py)
 
 ## Database 
 
+### connect
+
 ```python
 from bali.core import db
 
@@ -48,7 +51,7 @@ db.connect('DATABASE_URI')
   
 ```
 
-Declarative mode with sqla-wrapper
+### Declarative mode with sqla-wrapper
 
 ```python
 
@@ -68,7 +71,7 @@ todos = db.query(User).all()
 More convenient usage, ref to [SQLA-Wrapper](https://github.com/jpsca/sqla-wrapper)
 
 
-Declare models inherit from convenient base models
+### Declare models inherit from convenient base models
 
 *BaseModel*
 
@@ -93,6 +96,26 @@ class BaseModel(db.Model):
     is_active = Column(Boolean(), default=True)
 ```
 
+### Transaction
+
+SQLA-wrapper default model behavior is auto commit, auto commit will be disabled with `db.transaction` context. 
+
+```python
+with db.transaction():
+    item = Item.create(name='test1')
+```
+
+### Operators
+
+Operators provided `get_filters_expr` to transform filters (dict) to SQLAlchemy expressions.  
+
+```python
+from bali.db.operators import get_filters_expr
+from models import User
+
+users = User.query().filter(*get_filters_expr(User, **filters)).all()
+```
+
 ## Schema
 
 *model_to_schema*
@@ -112,7 +135,9 @@ Resource’s design borrows several key concepts from the REST architectural sty
 
 Inspired by `ViewSet` in Django REST Framework.
 
-**Generic HTTP/RPC Actions**
+Actions' name according [`Standard methods` in Google API design guide](https://cloud.google.com/apis/design/standard_methods) 
+
+### Generic HTTP/RPC Actions
 
 Generic HTTP/RPC support actions:
 
@@ -129,7 +154,10 @@ Generic Actions examples:
 ```python
 
 # 1. import `Resource` base class
-from bali.resource import Resource
+## before 2.1
+from bali.resource import Resource  # deprecated in 3.0
+## New from 2.1
+from bali.resources import Resource
 
 
 # 2. implementation actions inherited from Resource
@@ -156,12 +184,12 @@ class GreeterResource(Resource):
 
     @action()
     def delete(self, pk=None):
-        return {'result': True}
+        return {'id': pk, 'result': True}  # using `id` instand of `result`
 
 ```
 
 
-**Custom HTTP/RPC Actions**
+### Custom HTTP/RPC Actions
 
 Custom actions also decorated by `@action`, but `detail` signature is required.
 
@@ -177,7 +205,7 @@ def custom_action(self):
 > `False` means action set of resources, url path is '/{resources}'.
 > 
 
-**Override HTTP Actions**
+### Override HTTP Actions
 
 If the default HTTP action template is not satisfied your request, you can override HTTP actions.
 
@@ -194,6 +222,22 @@ def root():
 > More usage of `Resource`: [GreeterResource](examples/resources/greeter.py)
 
 
+### ModelResource
+
+<i>New in version 2.1.</i>
+
+```python
+class UserResource(ModelResource):
+    model = User
+    schema = UserSchema
+    filters = [
+        {'username': str},
+        {'age': Optional[str]},
+    ]  # yapf: disable
+    permission_classes = [IsAuthenticated]
+```
+
+
 ## Service Mixin
 
 ```python
@@ -206,6 +250,8 @@ class Hello(hello_pb2_grpc.HelloServiceServicer, ServiceMixin):
 
 ## Cache
 
+### Cache API
+
 ```python
 from bali.core import cache
 
@@ -216,6 +262,18 @@ cache.get(key)
 
 # Set cache 
 cache.set(key, value, timeout=10)
+```
+
+### cache memoize
+
+```python
+# Import the cache_memoize from bali core 
+from bali.core import cache_memoize
+
+# Attach decorator to cacheable function with a timeout of 100 seconds.
+@cache_memoize(100)
+def expensive_function(start, end):
+    return random.randint(start, end)
 ```
 
 ## Utils
@@ -257,25 +315,7 @@ class TestDemoRPC(GRPCTestBase):
         pass
 ```
 
-### CONTRIBUTE
+## Related Projects
 
-**Developer Environment**
-
-```bash
-pip install -r requirements_dev.txt
-``` 
-
-
-**Tag a new release**
-
-tag a version:
-
-```bash
-git tag -a v0.1.0
-```
-
-push tags to remote:
-
-```bash
-git push --tags
-```
+[![bali-cli](https://github-readme-stats.vercel.app/api/pin/?username=JoshYuJump&repo=bali-cli)](https://github.com/JoshYuJump/bali-cli)
+[![cookiecutter-bali](https://github-readme-stats.vercel.app/api/pin/?username=Ed-XCF&repo=cookiecutter-bali)](https://github.com/Ed-XCF/cookiecutter-bali)
